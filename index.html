@@ -249,6 +249,13 @@
       font-weight: 600;
     }
 
+    .cell.destroy {
+      background: #24b36b;
+      border-color: #6af3a1;
+      color: #ffffff;
+      font-weight: 700;
+    }
+
     .cell.best {
       box-shadow: 0 0 0 2px #ffdd7f;
     }
@@ -334,11 +341,11 @@
 <div class="app">
   <h1>
     Sea Battle Helper
-    <span>GamePigeon/Battleship solver (web port of the Python AI)</span>
+    <span>GamePigeon/Battleship solver (web port of the Python AI + sink logic)</span>
   </h1>
   <div class="subtitle">
-    Match your Sea Battle board (hits & misses), set how many ships of each size are left, and this tool will
-    compute the same kind of density map as the original Python A.I.
+    Match your Sea Battle board (hits, misses, sunk ships), set how many ships of each size are left, and this tool
+    computes the same style of density map as the original Python A.I.
   </div>
 
   <div class="layout">
@@ -346,7 +353,7 @@
     <div class="panel">
       <h2>
         Board
-        <small>Click to mark cells. Solver updates automatically.</small>
+        <small>Click to mark cells. Use “Sink” on a hit when you sink a ship.</small>
       </h2>
 
       <div class="controls-row">
@@ -362,6 +369,7 @@
         <div class="mode-buttons">
           <button type="button" class="mode-btn active" data-mode="miss">Miss</button>
           <button type="button" class="mode-btn" data-mode="hit">Hit</button>
+          <button type="button" class="mode-btn" data-mode="sink">Sink</button>
           <button type="button" class="mode-btn" data-mode="clear">Clear</button>
         </div>
 
@@ -381,6 +389,9 @@
           <span class="legend-swatch" style="background:#ff4d6a;"></span> Hit
         </div>
         <div class="legend-item">
+          <span class="legend-swatch" style="background:#24b36b;"></span> Sunk ship
+        </div>
+        <div class="legend-item">
           <span class="legend-swatch" style="background:linear-gradient(135deg,#203a1f,#47c572);"></span> High probability
         </div>
       </div>
@@ -394,7 +405,7 @@
     <div class="panel">
       <h2>
         Ships & Best Shots
-        <small>Match your GamePigeon mode & sunk ships.</small>
+        <small>Matches Sea Battle fleets for 8×8, 9×9, 10×10.</small>
       </h2>
 
       <div style="font-size:0.85rem; color:#c3c7e8;">
@@ -412,8 +423,10 @@
       </div>
 
       <div class="footer-note">
-        Tip: After you fully sink a ship in GamePigeon, decrease the count for that ship size here,
-        and mark the diagonal “no-ship” squares around it as misses in this board. That matches the original AI logic.
+        Workflow: fire a shot → mark it as Miss or Hit. When you completely sink a ship in GamePigeon,
+        switch to <b>Sink</b> mode and click one of that ship’s hit cells. The tool will mark the whole ship
+        as sunk, auto-fill the “no-adjacent” misses around it, reduce the remaining ship count of that size,
+        and update the density map.
       </div>
     </div>
   </div>
@@ -432,13 +445,14 @@
   const bestShotsEl = document.getElementById("bestShots");
   const modeButtons = Array.from(document.querySelectorAll(".mode-btn"));
 
-  // Board state: 0 = unknown, 1 = miss, 2 = hit
+  // Board state:
+  // 0 = unknown, 1 = miss, 2 = hit, 3 = destroyed/sunk
   let size = parseInt(boardSizeSelect.value, 10);
   let board = createEmptyBoard(size);
   let scores = createEmptyBoard(size);
 
   // Sea Battle fleets, exactly matching the Python AI
-  // 10x10: length -> count: 1:4, 2:3, 3:2, 4:1
+  // 10x10: 1:4, 2:3, 3:2, 4:1
   // 9x9 : 3:5, 4:3
   // 8x8 : 2:3, 3:3, 4:1
   const fleetConfigBySize = {
@@ -462,7 +476,7 @@
   // Current remaining ships: length -> remaining count
   let fleetCounts = {};
 
-  // Modes: mark misses / hits / clear
+  // Modes: miss / hit / sink / clear
   let currentMode = "miss";
 
   // Characters used by the Python AI
@@ -471,7 +485,7 @@
   const HIT     = "H";
   const MISS    = "^";
 
-  let gameBoardChars = [];   // 2D char board mirroring the Python code
+  let gameBoardChars = [];   // 2D char board mirroring the Python game_board
   let densityPyramid = [];   // DENSITY_PYRAMID
   let remainingShips = {};   // REMAINING_SHIPS mapping
 
@@ -584,6 +598,8 @@
       board[r][c] = 1;
     } else if (currentMode === "hit") {
       board[r][c] = 2;
+    } else if (currentMode === "sink") {
+      sinkShipUI(r, c);
     } else if (currentMode === "clear") {
       board[r][c] = 0;
     }
@@ -618,7 +634,78 @@
   });
 
   // =======================
-  // Python AI Port (core logic)
+  // Sink-ship logic (port of sink_ship)
+  // =======================
+
+  function sinkShipUI(r, c) {
+    // Only works on a hit cell
+    if (board[r][c] !== 2) {
+      return;
+    }
+
+    const sunkenCoords = [];
+    // mark starting cell as destroyed
+    board[r][c] = 3;
+    sunkenCoords.push({ r, c });
+
+    const directions = [
+      [0, -1], // left
+      [0,  1], // right
+      [-1, 0], // up
+      [1,  0]  // down
+    ];
+
+    // Expand along cardinal directions, turning contiguous hits into destroyed
+    directions.forEach(([dr, dc]) => {
+      let rr = r + dr;
+      let cc = c + dc;
+      while (rr >= 0 && rr < size && cc >= 0 && cc < size && board[rr][cc] === 2) {
+        board[rr][cc] = 3;
+        sunkenCoords.push({ r: rr, c: cc });
+        rr += dr;
+        cc += dc;
+      }
+    });
+
+    const shipLen = sunkenCoords.length;
+
+    // Decrement remaining ship count if this length exists
+    if (fleetCounts[shipLen] !== undefined && fleetCounts[shipLen] > 0) {
+      fleetCounts[shipLen] -= 1;
+
+      // Update the UI input for this ship length
+      const cfg = fleetConfigBySize[size] || [];
+      const idx = cfg.findIndex(s => s.len === shipLen);
+      if (idx !== -1) {
+        const inputs = shipsListEl.querySelectorAll("input[type='number']");
+        if (inputs[idx]) {
+          inputs[idx].value = String(fleetCounts[shipLen]);
+        }
+      }
+    }
+
+    // Now mark all 8-neighbor cells around the sunk ship as misses (if unknown),
+    // matching the Python "no ships within 1 tile" behavior.
+    const neighborOffsets = [
+      [0, -1], [0, 1], [-1, 0], [1, 0],
+      [-1, -1], [-1, 1], [1, -1], [1, 1]
+    ];
+
+    sunkenCoords.forEach(pos => {
+      neighborOffsets.forEach(([dr, dc]) => {
+        const rr = pos.r + dr;
+        const cc = pos.c + dc;
+        if (rr >= 0 && rr < size && cc >= 0 && cc < size) {
+          if (board[rr][cc] === 0) {
+            board[rr][cc] = 1; // mark as miss
+          }
+        }
+      });
+    });
+  }
+
+  // =======================
+  // Python AI Port (core density logic)
   // =======================
 
   function buildGameBoardChars() {
@@ -629,6 +716,7 @@
         const v = board[r][c];
         if (v === 1) rowChars.push(MISS);
         else if (v === 2) rowChars.push(HIT);
+        else if (v === 3) rowChars.push(DESTROY);
         else rowChars.push(EMPTY);
       }
       gameBoardChars.push(rowChars);
@@ -680,13 +768,13 @@
   }
 
   function getNumOpenNeighborsInDirection(arr, startIndex, shipSize) {
-    // This mirrors get_num_open_neighbors_in_direction in Python
+    // Port of get_num_open_neighbors_in_direction
     let pos = 0;
     let neg = 0;
     let hitsPos = 1;
     let hitsNeg = 1;
 
-    // Walk across existing H hits to find contiguity
+    // Extend over contiguous hits
     let idx = startIndex + 1;
     while (idx < arr.length && arr[idx] === HIT && hitsPos < shipSize - 1) {
       hitsPos++;
@@ -698,7 +786,7 @@
       idx--;
     }
 
-    // Count empty spaces in each direction
+    // Count empty in each direction
     idx = startIndex + 1;
     while (idx < arr.length && arr[idx] === EMPTY && pos < shipSize - hitsNeg) {
       pos++;
@@ -733,7 +821,7 @@
       spaceDensities.push(new Array(size).fill(0));
     }
 
-    // Horizontal segments
+    // Horizontal open sequences
     for (let r = 0; r < size; r++) {
       const row = gameBoardChars[r];
       let nextUnavailable = 0;
@@ -762,7 +850,7 @@
       }
     }
 
-    // Vertical segments
+    // Vertical open sequences
     for (let c = 0; c < size; c++) {
       const colArr = [];
       for (let r = 0; r < size; r++) {
@@ -799,7 +887,7 @@
       }
     }
 
-    // Neighbor preference
+    // Neighbor preference (more open neighbors = slightly better)
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
         const factor = 1 + 0.05 * getNumImmediateNeighbors(r, c);
@@ -807,8 +895,11 @@
       }
     }
 
-    // Partially-sunk ship logic (boost squares adjacent to hits)
-    const remainingKeys = Object.keys(remainingShips).map(k => parseInt(k, 10)).filter(k => remainingShips[k] > 0);
+    // Partial-ship logic like Python
+    const remainingKeys = Object.keys(remainingShips)
+      .map(k => parseInt(k, 10))
+      .filter(k => remainingShips[k] > 0);
+
     if (remainingKeys.length === 0) return spaceDensities;
 
     const largestRemainingShipSize = Math.max(...remainingKeys);
@@ -834,8 +925,8 @@
           for (let rr = 0; rr < size; rr++) colArr.push(gameBoardChars[rr][c]);
           const rowArr = gameBoardChars[r];
 
-          // Vertical alignment
           if (upHit || downHit) {
+            // vertical alignment
             const { pos: downSpace, neg: upSpace } =
               getNumOpenNeighborsInDirection(colArr, r, largestRemainingShipSize);
 
@@ -847,9 +938,8 @@
               const factor = 1 + 0.02 * getNumImmediateNeighbors(r + 1, c);
               spaceDensities[r + 1][c] = (maxDensity + downSpace) * factor;
             }
-          }
-          // Horizontal alignment
-          else if (leftHit || rightHit) {
+          } else if (leftHit || rightHit) {
+            // horizontal alignment
             const { pos: rightSpace, neg: leftSpace } =
               getNumOpenNeighborsInDirection(rowArr, c, largestRemainingShipSize);
 
@@ -861,9 +951,8 @@
               const factor = 1 + 0.02 * getNumImmediateNeighbors(r, c + 1);
               spaceDensities[r][c + 1] = (maxDensity + rightSpace) * factor;
             }
-          }
-          // Single hit, unknown alignment
-          else {
+          } else {
+            // single hit, unknown orientation
             const { pos: downSpace, neg: upSpace } =
               getNumOpenNeighborsInDirection(colArr, r, largestRemainingShipSize);
             const { pos: rightSpace, neg: leftSpace } =
@@ -930,12 +1019,14 @@
       const state = board[r][c];
       const score = scores[r][c];
 
-      cell.classList.remove("unknown", "miss", "hit", "best");
+      cell.classList.remove("unknown", "miss", "hit", "destroy", "best");
 
       if (state === 1) {
         cell.classList.add("miss");
       } else if (state === 2) {
         cell.classList.add("hit");
+      } else if (state === 3) {
+        cell.classList.add("destroy");
       } else {
         cell.classList.add("unknown");
       }
@@ -943,7 +1034,7 @@
       const bg = cell.querySelector(".cell-bg");
       const scoreLabel = cell.querySelector(".cell-score");
 
-      if (maxScore > 0 && score > 0 && state !== 1) {
+      if (maxScore > 0 && score > 0 && state === 0) {
         const t = score / maxScore;
         const clamped = Math.max(0, Math.min(1, t));
         const rCol = Math.round(32 + 80 * clamped);

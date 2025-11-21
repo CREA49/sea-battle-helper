@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Sea Battle / Battleship Helper</title>
+  <title>Sea Battle / GamePigeon Helper</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
@@ -37,7 +37,7 @@
     }
 
     h1 span {
-      font-size: 1.1rem;
+      font-size: 1.05rem;
       color: #9ea7ff;
       font-weight: 500;
     }
@@ -96,7 +96,8 @@
     }
 
     select,
-    button {
+    button,
+    input[type="number"] {
       font-family: inherit;
       border-radius: 999px;
       border: 1px solid #343b65;
@@ -104,12 +105,24 @@
       color: #f5f5f5;
       padding: 6px 12px;
       font-size: 0.85rem;
-      cursor: pointer;
       outline: none;
+      box-sizing: border-box;
+    }
+
+    input[type="number"] {
+      width: 60px;
+      text-align: center;
+      -moz-appearance: textfield;
+    }
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
     }
 
     select:focus,
-    button:focus {
+    button:focus,
+    input[type="number"]:focus {
       border-color: #5b84ff;
       box-shadow: 0 0 0 1px rgba(91, 132, 255, 0.5);
     }
@@ -121,6 +134,7 @@
       border-radius: 999px;
       border: 1px solid #4650a8;
       background: linear-gradient(135deg, #3d4ef0, #7f5dff);
+      cursor: pointer;
     }
 
     button.secondary {
@@ -191,6 +205,10 @@
       grid-template-columns: 24px repeat(9, 32px);
     }
 
+    .board-size-10 {
+      grid-template-columns: 24px repeat(10, 32px);
+    }
+
     .board-header-cell,
     .board-row-label {
       display: flex;
@@ -258,13 +276,13 @@
       display: flex;
       flex-wrap: wrap;
       gap: 8px 12px;
-      margin-top: 4px;
+      margin-top: 6px;
     }
 
     .ship-chip {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
+      gap: 6px;
       padding: 4px 8px;
       border-radius: 999px;
       background: #20264a;
@@ -272,8 +290,14 @@
       font-size: 0.8rem;
     }
 
-    .ship-chip input {
-      accent-color: #5b84ff;
+    .ship-chip span.len {
+      font-weight: 500;
+      color: #d4d8ff;
+    }
+
+    .ship-chip span.max {
+      font-size: 0.75rem;
+      color: #8f95c4;
     }
 
     .status {
@@ -310,10 +334,11 @@
 <div class="app">
   <h1>
     Sea Battle Helper
-    <span>GamePigeon / Battleship board solver</span>
+    <span>GamePigeon/Battleship solver (web port of the Python AI)</span>
   </h1>
   <div class="subtitle">
-    Mark your hits & misses from the GamePigeon Sea Battle board. This tool calculates which cells are most likely to contain ships.
+    Match your Sea Battle board (hits & misses), set how many ships of each size are left, and this tool will
+    compute the same kind of density map as the original Python A.I.
   </div>
 
   <div class="layout">
@@ -321,7 +346,7 @@
     <div class="panel">
       <h2>
         Board
-        <small>Click to mark cells, solver updates automatically.</small>
+        <small>Click to mark cells. Solver updates automatically.</small>
       </h2>
 
       <div class="controls-row">
@@ -369,15 +394,13 @@
     <div class="panel">
       <h2>
         Ships & Best Shots
-        <small>Toggle ships remaining to match your game.</small>
+        <small>Match your GamePigeon mode & sunk ships.</small>
       </h2>
 
-      <div>
-        <div style="font-size:0.85rem; color:#c3c7e8;">Fleet configuration:</div>
-        <div class="ships-list" id="shipsList">
-          <!-- filled by JS -->
-        </div>
+      <div style="font-size:0.85rem; color:#c3c7e8;">
+        Fleet configuration (remaining ships):
       </div>
+      <div class="ships-list" id="shipsList"></div>
 
       <div class="status" id="statusText">
         Waiting for board input…
@@ -389,70 +412,124 @@
       </div>
 
       <div class="footer-note">
-        Tip: In the early game, the solver prefers central, spread-out shots. Once you get hits, it naturally clusters probabilities around them.
+        Tip: After you fully sink a ship in GamePigeon, decrease the count for that ship size here,
+        and mark the diagonal “no-ship” squares around it as misses in this board. That matches the original AI logic.
       </div>
     </div>
   </div>
 </div>
 
 <script>
-  // ===== Model =====
+  // =======================
+  // Constants & DOM refs
+  // =======================
+
   const boardEl = document.getElementById("board");
   const boardSizeSelect = document.getElementById("boardSizeSelect");
   const resetBoardBtn = document.getElementById("resetBoardBtn");
   const shipsListEl = document.getElementById("shipsList");
   const statusText = document.getElementById("statusText");
   const bestShotsEl = document.getElementById("bestShots");
-
   const modeButtons = Array.from(document.querySelectorAll(".mode-btn"));
-  let currentMode = "miss"; // "miss" | "hit" | "clear"
 
-  // 0 = unknown, 1 = miss, 2 = hit
+  // Board state: 0 = unknown, 1 = miss, 2 = hit
   let size = parseInt(boardSizeSelect.value, 10);
   let board = createEmptyBoard(size);
   let scores = createEmptyBoard(size);
 
-  // Standard Battleship / Sea Battle fleet
-  const baseFleet = [
-    { id: "ship5", len: 5, label: "Carrier (5)" },
-    { id: "ship4", len: 4, label: "Battleship (4)" },
-    { id: "ship3a", len: 3, label: "Cruiser (3)" },
-    { id: "ship3b", len: 3, label: "Submarine (3)" },
-    { id: "ship2", len: 2, label: "Destroyer (2)" },
-  ];
+  // Sea Battle fleets, exactly matching the Python AI
+  // 10x10: length -> count: 1:4, 2:3, 3:2, 4:1
+  // 9x9 : 3:5, 4:3
+  // 8x8 : 2:3, 3:3, 4:1
+  const fleetConfigBySize = {
+    8:  [
+      { len: 2, count: 3 },
+      { len: 3, count: 3 },
+      { len: 4, count: 1 }
+    ],
+    9:  [
+      { len: 3, count: 5 },
+      { len: 4, count: 3 }
+    ],
+    10: [
+      { len: 1, count: 4 },
+      { len: 2, count: 3 },
+      { len: 3, count: 2 },
+      { len: 4, count: 1 }
+    ]
+  };
 
-  // ===== Setup UI =====
+  // Current remaining ships: length -> remaining count
+  let fleetCounts = {};
+
+  // Modes: mark misses / hits / clear
+  let currentMode = "miss";
+
+  // Characters used by the Python AI
+  const DESTROY = "D";
+  const EMPTY   = "-";
+  const HIT     = "H";
+  const MISS    = "^";
+
+  let gameBoardChars = [];   // 2D char board mirroring the Python code
+  let densityPyramid = [];   // DENSITY_PYRAMID
+  let remainingShips = {};   // REMAINING_SHIPS mapping
+
+  // =======================
+  // Utility
+  // =======================
+
   function createEmptyBoard(n) {
     const b = [];
     for (let r = 0; r < n; r++) {
-      const row = new Array(n).fill(0);
-      b.push(row);
+      b.push(new Array(n).fill(0));
     }
     return b;
   }
 
+  function initFleetForSize() {
+    const cfg = fleetConfigBySize[size] || [];
+    fleetCounts = {};
+    cfg.forEach(ship => {
+      fleetCounts[ship.len] = ship.count;
+    });
+  }
+
   function initFleetUI() {
     shipsListEl.innerHTML = "";
-    baseFleet.forEach(ship => {
-      const chip = document.createElement("label");
-      chip.className = "ship-chip";
+    const cfg = fleetConfigBySize[size] || [];
+    cfg.forEach(ship => {
+      const wrap = document.createElement("div");
+      wrap.className = "ship-chip";
 
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.id = ship.id;
-      checkbox.checked = true;
-      checkbox.dataset.len = ship.len.toString();
+      const lenSpan = document.createElement("span");
+      lenSpan.className = "len";
+      lenSpan.textContent = `Size ${ship.len}`;
 
-      checkbox.addEventListener("change", () => {
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "0";
+      input.max = String(ship.count);
+      input.value = String(fleetCounts[ship.len] ?? ship.count);
+
+      input.addEventListener("input", () => {
+        let v = parseInt(input.value || "0", 10);
+        if (isNaN(v)) v = 0;
+        if (v < 0) v = 0;
+        if (v > ship.count) v = ship.count;
+        input.value = String(v);
+        fleetCounts[ship.len] = v;
         recomputeScores();
       });
 
-      const text = document.createElement("span");
-      text.textContent = ship.label;
+      const maxSpan = document.createElement("span");
+      maxSpan.className = "max";
+      maxSpan.textContent = `(max ${ship.count})`;
 
-      chip.appendChild(checkbox);
-      chip.appendChild(text);
-      shipsListEl.appendChild(chip);
+      wrap.appendChild(lenSpan);
+      wrap.appendChild(input);
+      wrap.appendChild(maxSpan);
+      shipsListEl.appendChild(wrap);
     });
   }
 
@@ -461,20 +538,20 @@
     boardEl.classList.remove("board-size-8", "board-size-9", "board-size-10");
     boardEl.classList.add("board-size-" + size);
 
-    // Top-left corner empty
+    // Top-left corner blank
     const corner = document.createElement("div");
     corner.className = "board-header-cell";
     boardEl.appendChild(corner);
 
-    // Column labels
+    // Column numbers
     for (let c = 0; c < size; c++) {
-      const label = document.createElement("div");
-      label.className = "board-header-cell";
-      label.textContent = c + 1;
-      boardEl.appendChild(label);
+      const hdr = document.createElement("div");
+      hdr.className = "board-header-cell";
+      hdr.textContent = c + 1;
+      boardEl.appendChild(hdr);
     }
 
-    // Rows with labels + cells
+    // Rows with labels and cells
     for (let r = 0; r < size; r++) {
       const rowLabel = document.createElement("div");
       rowLabel.className = "board-row-label";
@@ -484,12 +561,10 @@
       for (let c = 0; c < size; c++) {
         const cell = document.createElement("div");
         cell.className = "cell unknown";
-        cell.dataset.row = r.toString();
-        cell.dataset.col = c.toString();
+        cell.dataset.row = String(r);
+        cell.dataset.col = String(c);
 
-        cell.addEventListener("click", () => {
-          onCellClick(r, c);
-        });
+        cell.addEventListener("click", () => onCellClick(r, c));
 
         const bg = document.createElement("div");
         bg.className = "cell-bg";
@@ -527,6 +602,8 @@
     size = parseInt(boardSizeSelect.value, 10);
     board = createEmptyBoard(size);
     scores = createEmptyBoard(size);
+    initFleetForSize();
+    initFleetUI();
     initBoardUI();
     recomputeScores();
   });
@@ -534,124 +611,318 @@
   resetBoardBtn.addEventListener("click", () => {
     board = createEmptyBoard(size);
     scores = createEmptyBoard(size);
+    initFleetForSize();
+    initFleetUI();
     initBoardUI();
     recomputeScores();
   });
 
-  // ===== Solver Logic =====
+  // =======================
+  // Python AI Port (core logic)
+  // =======================
 
-  function getRemainingShips() {
-    const checked = Array.from(
-      shipsListEl.querySelectorAll("input[type=checkbox]")
-    ).filter(cb => cb.checked);
-    return checked.map(cb => parseInt(cb.dataset.len, 10));
+  function buildGameBoardChars() {
+    gameBoardChars = [];
+    for (let r = 0; r < size; r++) {
+      const rowChars = [];
+      for (let c = 0; c < size; c++) {
+        const v = board[r][c];
+        if (v === 1) rowChars.push(MISS);
+        else if (v === 2) rowChars.push(HIT);
+        else rowChars.push(EMPTY);
+      }
+      gameBoardChars.push(rowChars);
+    }
   }
 
-  // Valid if:
-  // - ship fits in board
-  // - does NOT overlap any miss
-  // - optionally gets bonus if it overlaps hits
-  function isValidPlacement(shipLen, startR, startC, dr, dc) {
-    let hasConflict = false;
-    for (let i = 0; i < shipLen; i++) {
-      const r = startR + dr * i;
-      const c = startC + dc * i;
-      const cell = board[r][c];
-      if (cell === 1) {
-        // Miss: ship cannot be here
-        hasConflict = true;
-        break;
+  function buildRemainingShips() {
+    remainingShips = {};
+    Object.keys(fleetCounts).forEach(lenStr => {
+      const len = parseInt(lenStr, 10);
+      const count = fleetCounts[len] || 0;
+      if (count > 0) {
+        remainingShips[len] = count;
+      }
+    });
+  }
+
+  function createDensityPyramid() {
+    densityPyramid = [];
+    const remainingList = [];
+    for (const key in remainingShips) {
+      const shipSize = parseInt(key, 10);
+      const numRemaining = remainingShips[shipSize];
+      if (numRemaining > 0) {
+        remainingList.push({ shipSize, numRemaining });
       }
     }
-    return !hasConflict;
+
+    for (let level = 1; level <= size; level++) {
+      const row = new Array(level).fill(0);
+      remainingList.forEach(({ shipSize, numRemaining }) => {
+        for (let index = 0; index <= level + 1 - shipSize; index++) {
+          const rightIndex = index + shipSize - 1;
+          if (rightIndex >= level) continue;
+          for (let space = index; space <= rightIndex; space++) {
+            row[space] += numRemaining;
+          }
+        }
+      });
+      densityPyramid.push(row);
+    }
   }
 
-  function countHitsInPlacement(shipLen, startR, startC, dr, dc) {
-    let hits = 0;
-    for (let i = 0; i < shipLen; i++) {
-      const r = startR + dr * i;
-      const c = startC + dc * i;
-      if (board[r][c] === 2) hits++;
+  function fillListWithDensityPyramidData(arr, startIndex, sequenceLength) {
+    const data = densityPyramid[sequenceLength - 1];
+    for (let i = 0; i < sequenceLength; i++) {
+      arr[startIndex + i] += data[i];
     }
-    return hits;
+  }
+
+  function getNumOpenNeighborsInDirection(arr, startIndex, shipSize) {
+    // This mirrors get_num_open_neighbors_in_direction in Python
+    let pos = 0;
+    let neg = 0;
+    let hitsPos = 1;
+    let hitsNeg = 1;
+
+    // Walk across existing H hits to find contiguity
+    let idx = startIndex + 1;
+    while (idx < arr.length && arr[idx] === HIT && hitsPos < shipSize - 1) {
+      hitsPos++;
+      idx++;
+    }
+    idx = startIndex - 1;
+    while (idx >= 0 && arr[idx] === HIT && hitsNeg < shipSize - 1) {
+      hitsNeg++;
+      idx--;
+    }
+
+    // Count empty spaces in each direction
+    idx = startIndex + 1;
+    while (idx < arr.length && arr[idx] === EMPTY && pos < shipSize - hitsNeg) {
+      pos++;
+      idx++;
+    }
+    idx = startIndex - 1;
+    while (idx >= 0 && arr[idx] === EMPTY && neg < shipSize - hitsPos) {
+      neg++;
+      idx--;
+    }
+    return { pos, neg };
+  }
+
+  function getNumImmediateNeighbors(row, col) {
+    let numOpen = 0;
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        const rr = row + dr;
+        const cc = col + dc;
+        if (rr >= 0 && rr < size && cc >= 0 && cc < size) {
+          if (gameBoardChars[rr][cc] === EMPTY) numOpen++;
+        }
+      }
+    }
+    return numOpen;
+  }
+
+  function generateSpaceDensities() {
+    const spaceDensities = [];
+    for (let i = 0; i < size; i++) {
+      spaceDensities.push(new Array(size).fill(0));
+    }
+
+    // Horizontal segments
+    for (let r = 0; r < size; r++) {
+      const row = gameBoardChars[r];
+      let nextUnavailable = 0;
+      let nextOpen = 0;
+      let evaluating = true;
+
+      while (evaluating) {
+        while (nextOpen < size && (row[nextOpen] === MISS || row[nextOpen] === DESTROY)) {
+          nextOpen++;
+        }
+        if (nextOpen === size) break;
+
+        while (nextUnavailable < size && (row[nextUnavailable] === EMPTY || row[nextUnavailable] === HIT)) {
+          nextUnavailable++;
+        }
+        const segmentLen = nextUnavailable - nextOpen;
+        if (segmentLen > 0) {
+          fillListWithDensityPyramidData(spaceDensities[r], nextOpen, segmentLen);
+        }
+
+        if (nextUnavailable === size) {
+          evaluating = false;
+        }
+        nextOpen = nextUnavailable + 1;
+        nextUnavailable += 1;
+      }
+    }
+
+    // Vertical segments
+    for (let c = 0; c < size; c++) {
+      const colArr = [];
+      for (let r = 0; r < size; r++) {
+        colArr.push(gameBoardChars[r][c]);
+      }
+
+      let nextUnavailable = 0;
+      let nextOpen = 0;
+      let evaluating = true;
+
+      while (evaluating) {
+        while (nextOpen < size && (colArr[nextOpen] === MISS || colArr[nextOpen] === DESTROY)) {
+          nextOpen++;
+        }
+        if (nextOpen === size) break;
+
+        while (nextUnavailable < size && (colArr[nextUnavailable] === EMPTY || colArr[nextUnavailable] === HIT)) {
+          nextUnavailable++;
+        }
+        const segmentLen = nextUnavailable - nextOpen;
+        if (segmentLen > 0) {
+          const densityCol = new Array(size).fill(0);
+          fillListWithDensityPyramidData(densityCol, nextOpen, segmentLen);
+          for (let r = 0; r < size; r++) {
+            spaceDensities[r][c] += densityCol[r];
+          }
+        }
+
+        if (nextUnavailable === size) {
+          evaluating = false;
+        }
+        nextOpen = nextUnavailable + 1;
+        nextUnavailable += 1;
+      }
+    }
+
+    // Neighbor preference
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        const factor = 1 + 0.05 * getNumImmediateNeighbors(r, c);
+        spaceDensities[r][c] *= factor;
+      }
+    }
+
+    // Partially-sunk ship logic (boost squares adjacent to hits)
+    const remainingKeys = Object.keys(remainingShips).map(k => parseInt(k, 10)).filter(k => remainingShips[k] > 0);
+    if (remainingKeys.length === 0) return spaceDensities;
+
+    const largestRemainingShipSize = Math.max(...remainingKeys);
+    let maxDensity = 0;
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        if (spaceDensities[r][c] > maxDensity) maxDensity = spaceDensities[r][c];
+      }
+    }
+
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        const spot = gameBoardChars[r][c];
+        if (spot === HIT) {
+          spaceDensities[r][c] = 0;
+
+          const upHit    = (r - 1 >= 0 && gameBoardChars[r - 1][c] === HIT);
+          const downHit  = (r + 1 < size && gameBoardChars[r + 1][c] === HIT);
+          const leftHit  = (c - 1 >= 0 && gameBoardChars[r][c - 1] === HIT);
+          const rightHit = (c + 1 < size && gameBoardChars[r][c + 1] === HIT);
+
+          const colArr = [];
+          for (let rr = 0; rr < size; rr++) colArr.push(gameBoardChars[rr][c]);
+          const rowArr = gameBoardChars[r];
+
+          // Vertical alignment
+          if (upHit || downHit) {
+            const { pos: downSpace, neg: upSpace } =
+              getNumOpenNeighborsInDirection(colArr, r, largestRemainingShipSize);
+
+            if (r - 1 >= 0 && gameBoardChars[r - 1][c] === EMPTY) {
+              const factor = 1 + 0.02 * getNumImmediateNeighbors(r - 1, c);
+              spaceDensities[r - 1][c] = (maxDensity + upSpace) * factor;
+            }
+            if (r + 1 < size && gameBoardChars[r + 1][c] === EMPTY) {
+              const factor = 1 + 0.02 * getNumImmediateNeighbors(r + 1, c);
+              spaceDensities[r + 1][c] = (maxDensity + downSpace) * factor;
+            }
+          }
+          // Horizontal alignment
+          else if (leftHit || rightHit) {
+            const { pos: rightSpace, neg: leftSpace } =
+              getNumOpenNeighborsInDirection(rowArr, c, largestRemainingShipSize);
+
+            if (c - 1 >= 0 && gameBoardChars[r][c - 1] === EMPTY) {
+              const factor = 1 + 0.02 * getNumImmediateNeighbors(r, c - 1);
+              spaceDensities[r][c - 1] = (maxDensity + leftSpace) * factor;
+            }
+            if (c + 1 < size && gameBoardChars[r][c + 1] === EMPTY) {
+              const factor = 1 + 0.02 * getNumImmediateNeighbors(r, c + 1);
+              spaceDensities[r][c + 1] = (maxDensity + rightSpace) * factor;
+            }
+          }
+          // Single hit, unknown alignment
+          else {
+            const { pos: downSpace, neg: upSpace } =
+              getNumOpenNeighborsInDirection(colArr, r, largestRemainingShipSize);
+            const { pos: rightSpace, neg: leftSpace } =
+              getNumOpenNeighborsInDirection(rowArr, c, largestRemainingShipSize);
+
+            if (r - 1 >= 0 && gameBoardChars[r - 1][c] === EMPTY) {
+              const factor = 1 + 0.02 * getNumImmediateNeighbors(r - 1, c);
+              spaceDensities[r - 1][c] = (maxDensity + upSpace) * factor;
+            }
+            if (r + 1 < size && gameBoardChars[r + 1][c] === EMPTY) {
+              const factor = 1 + 0.02 * getNumImmediateNeighbors(r + 1, c);
+              spaceDensities[r + 1][c] = (maxDensity + downSpace) * factor;
+            }
+            if (c - 1 >= 0 && gameBoardChars[r][c - 1] === EMPTY) {
+              const factor = 1 + 0.02 * getNumImmediateNeighbors(r, c - 1);
+              spaceDensities[r][c - 1] = (maxDensity + leftSpace) * factor;
+            }
+            if (c + 1 < size && gameBoardChars[r][c + 1] === EMPTY) {
+              const factor = 1 + 0.02 * getNumImmediateNeighbors(r, c + 1);
+              spaceDensities[r][c + 1] = (maxDensity + rightSpace) * factor;
+            }
+          }
+        }
+      }
+    }
+
+    return spaceDensities;
   }
 
   function recomputeScores() {
-    const ships = getRemainingShips();
-    scores = createEmptyBoard(size);
+    buildGameBoardChars();
+    buildRemainingShips();
 
-    const anyHits = board.some(row => row.some(v => v === 2));
-
-    if (ships.length === 0) {
+    if (Object.keys(remainingShips).length === 0) {
+      scores = createEmptyBoard(size);
       updateBoardUI();
-      statusText.textContent = "No ships selected. Check at least one ship to calculate probabilities.";
       bestShotsEl.innerHTML = "";
+      statusText.textContent = "No ships selected (all counts are 0). Increase remaining ship counts to see probabilities.";
       return;
     }
 
-    // For each ship, slide horizontally and vertically
-    ships.forEach(shipLen => {
-      // Horizontal placements
-      for (let r = 0; r < size; r++) {
-        for (let c = 0; c <= size - shipLen; c++) {
-          if (!isValidPlacement(shipLen, r, c, 0, 1)) continue;
-
-          const hitsCovered = countHitsInPlacement(shipLen, r, c, 0, 1);
-          if (anyHits && hitsCovered === 0) {
-            // Slight penalty: if we already have hits, prefer placements that
-            // overlap them. Don't completely discard, just lower weight.
-            var weight = 0.5;
-          } else {
-            var weight = 1 + hitsCovered * 2; // more hits = stronger placement
-          }
-
-          for (let i = 0; i < shipLen; i++) {
-            const rr = r + 0 * i;
-            const cc = c + 1 * i;
-            if (board[rr][cc] !== 1) {
-              scores[rr][cc] += weight;
-            }
-          }
-        }
-      }
-
-      // Vertical placements
-      for (let c = 0; c < size; c++) {
-        for (let r = 0; r <= size - shipLen; r++) {
-          if (!isValidPlacement(shipLen, r, c, 1, 0)) continue;
-
-          const hitsCovered = countHitsInPlacement(shipLen, r, c, 1, 0);
-          if (anyHits && hitsCovered === 0) {
-            var weightV = 0.5;
-          } else {
-            var weightV = 1 + hitsCovered * 2;
-          }
-
-          for (let i = 0; i < shipLen; i++) {
-            const rr = r + 1 * i;
-            const cc = c + 0 * i;
-            if (board[rr][cc] !== 1) {
-              scores[rr][cc] += weightV;
-            }
-          }
-        }
-      }
-    });
-
+    createDensityPyramid();
+    scores = generateSpaceDensities();
     updateBoardUI();
     updateBestShots();
   }
 
-  // Update the board colors and score numbers in the DOM
+  // =======================
+  // UI update
+  // =======================
+
   function updateBoardUI() {
     let maxScore = 0;
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
-        if (scores[r][c] > maxScore) {
-          maxScore = scores[r][c];
-        }
+        if (scores[r][c] > maxScore) maxScore = scores[r][c];
       }
     }
+
     const cells = boardEl.querySelectorAll(".cell");
     cells.forEach(cell => {
       const r = parseInt(cell.dataset.row, 10);
@@ -672,15 +943,14 @@
       const bg = cell.querySelector(".cell-bg");
       const scoreLabel = cell.querySelector(".cell-score");
 
-      if (maxScore > 0 && score > 0) {
-        const t = score / maxScore; // 0..1
+      if (maxScore > 0 && score > 0 && state !== 1) {
+        const t = score / maxScore;
         const clamped = Math.max(0, Math.min(1, t));
-        // Color gradient: dark green -> bright lime
         const rCol = Math.round(32 + 80 * clamped);
         const gCol = Math.round(80 + 140 * clamped);
         const bCol = Math.round(48 + 40 * clamped);
         bg.style.background = `rgb(${rCol}, ${gCol}, ${bCol})`;
-        bg.style.opacity = state === 1 ? 0.2 : 0.9;
+        bg.style.opacity = 0.9;
         scoreLabel.textContent = score.toFixed(0);
       } else {
         bg.style.background = "transparent";
@@ -690,28 +960,33 @@
     });
   }
 
+  function coordFromRC(r, c) {
+    return String.fromCharCode(65 + r) + (c + 1);
+  }
+
+  function getCellElement(r, c) {
+    return boardEl.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+  }
+
   function updateBestShots() {
-    // Find top unknown cells by score
     let maxScore = 0;
     const candidates = [];
+
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
-        if (board[r][c] === 0 && scores[r][c] > 0) {
-          if (scores[r][c] > maxScore) {
-            maxScore = scores[r][c];
-          }
+        if (board[r][c] === 0 && scores[r][c] > maxScore) {
+          maxScore = scores[r][c];
         }
       }
     }
 
-    // Clear best class
     const allCells = boardEl.querySelectorAll(".cell");
     allCells.forEach(cell => cell.classList.remove("best"));
 
     bestShotsEl.innerHTML = "";
 
     if (maxScore <= 0) {
-      statusText.textContent = "No valid ship placements yet. Start marking misses and hits to see probabilities.";
+      statusText.textContent = "Mark some misses/hits and set remaining ships to see the best moves.";
       return;
     }
 
@@ -723,7 +998,6 @@
       }
     }
 
-    // Highlight top 5
     const top = candidates.slice(0, 5);
     top.forEach(pos => {
       const coord = coordFromRC(pos.r, pos.c);
@@ -736,18 +1010,14 @@
       if (cell) cell.classList.add("best");
     });
 
-    statusText.textContent = `Highest probability cells (based on remaining ships and your hits/misses):`;
+    statusText.textContent = "Highest probability squares based on Sea Battle rules:";
   }
 
-  function coordFromRC(r, c) {
-    return String.fromCharCode(65 + r) + (c + 1);
-  }
+  // =======================
+  // Init
+  // =======================
 
-  function getCellElement(r, c) {
-    return boardEl.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
-  }
-
-  // ===== Initialize =====
+  initFleetForSize();
   initFleetUI();
   initBoardUI();
   recomputeScores();
